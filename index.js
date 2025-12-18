@@ -89,8 +89,8 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
             bank_tujuan,
             rekening_tujuan,
             nama_penerima,
-            rekening_admin_bank, // Kolom baru
-            rekening_admin_no,   // Kolom baru
+            rekening_admin_bank,
+            rekening_admin_no,
             nominal,
             kode_unik,
             total_bayar,
@@ -100,7 +100,7 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
         const fotoKtpBuffer = req.file ? req.file.buffer : null;
         const totalFormatted = `Rp ${parseInt(total_bayar).toLocaleString('id-ID')}`;
 
-        // A. Simpan ke Database (Tabel Updated)
+        // A. Simpan ke Database
         const sql = `INSERT INTO transaksi_flip 
             (nama_pengirim, whatsapp_pengirim, bank_tujuan, rekening_tujuan, nama_penerima, 
              rekening_admin_bank, rekening_admin_no, nominal_transfer, kode_unik, total_bayar, catatan, foto_ktp) 
@@ -114,50 +114,73 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
 
         const orderId = result.insertId;
 
-        // B. Format Pesan Detail (Sesuai Kebutuhan)
-        const pesanDetail = `📌 *DETAIL TRANSAKSI #${orderId}*\n\n` +
-            `👤 *Pengirim:* ${nama_pengirim}\n` +
-            `📱 *WhatsApp:* ${whatsapp}\n` +
-            `🏦 *Ke Rekening Flip:* ${rekening_admin_bank} (${rekening_admin_no})\n` +
-            `---------------------------\n` +
-            `🎯 *Tujuan Transfer:* ${bank_tujuan}\n` +
-            `💳 *No. Rekening:* ${rekening_tujuan}\n` +
-            `✍️ *Atas Nama:* ${nama_penerima}\n` +
-            `💰 *Total Bayar:* ${totalFormatted}\n` +
-            `📝 *Catatan:* ${catatan || '-'}\n\n`;
+        // B. Desain Email Admin
+        const emailDesignHtml = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden;">
+                <div style="background-color: #f97316; padding: 20px; text-align: center; color: white;">
+                    <h1 style="margin: 0;">Transaksi Baru #${orderId}</h1>
+                </div>
+                <div style="padding: 20px;">
+                    <p><b>Pelanggan:</b> ${nama_pengirim}</p>
+                    <p><b>WA:</b> ${whatsapp}</p>
+                    <p><b>Transfer Ke:</b> ${rekening_admin_bank} (${rekening_admin_no})</p>
+                    <hr>
+                    <p><b>Target:</b> ${bank_tujuan} - ${rekening_tujuan}</p>
+                    <p><b>A/n:</b> ${nama_penerima}</p>
+                    <p style="font-size: 18px; color: #f97316;"><b>Total: ${totalFormatted}</b></p>
+                </div>
+            </div>`;
 
-        // C. Kirim WhatsApp Admin
+        // C. Kirim WA Admin (9 Variabel)
         try {
             await twilioClient.messages.create({
                 from: TWILIO_WA_NUMBER,
                 to: ADMIN_WA,
-                body: `🔔 *PESANAN BARU*\n\n${pesanDetail}Cek mutasi pada rekening ${rekening_admin_bank}!`
+                contentSid: 'HX99e559b9adb630024681d0172f3176ac',
+                contentVariables: JSON.stringify({
+                    "1": nama_pengirim,
+                    "2": whatsapp,
+                    "3": rekening_admin_bank,
+                    "4": rekening_admin_no,
+                    "5": bank_tujuan,
+                    "6": rekening_tujuan,
+                    "7": nama_penerima,
+                    "8": totalFormatted,
+                    "9": catatan || "-"
+                })
             });
-        } catch (e) { console.error("WA Admin Error"); }
+        } catch (e) { console.error("WA Admin Error:", e.message); }
 
-        // D. Kirim WhatsApp Pengirim
+        // D. Kirim WA Pengguna (7 Variabel)
         try {
             await twilioClient.messages.create({
                 from: TWILIO_WA_NUMBER,
                 to: formatToWA(whatsapp),
-                body: `Halo *${nama_pengirim}*,\n\nPermintaan transfer Anda sedang *DIVERIFIKASI*.\n\n${pesanDetail}Pastikan Anda telah transfer tepat *${totalFormatted}* ke rekening ${rekening_admin_bank} kami.`
+                contentSid: 'HXd07c512d9aba38d44109fdf0828941ae', // Gunakan SID template user yang baru disetujui
+                contentVariables: JSON.stringify({
+                    "1": nama_pengirim,
+                    "2": rekening_admin_bank,
+                    "3": rekening_admin_no,
+                    "4": totalFormatted,
+                    "5": bank_tujuan,
+                    "6": rekening_tujuan,
+                    "7": nama_penerima
+                })
             });
-        } catch (e) { console.error("WA User Error"); }
+        } catch (e) { console.error("WA User Error:", e.message); }
 
-        // E. Kirim Email Admin (Lampiran KTP)
-        const mailOptions = {
+        // E. Kirim Email Admin
+        await transporter.sendMail({
             from: `"Flip System" <${DEFAULT_EMAIL}>`,
             to: DEFAULT_EMAIL,
-            subject: `🔥 [TF #${orderId}] ${nama_pengirim} -> ${bank_tujuan}`,
-            html: `<h3>Detail Transaksi Baru</h3>` + pesanDetail.replace(/\n/g, '<br>'),
+            subject: `🔥 [TF #${orderId}] ${nama_pengirim}`,
+            html: emailDesignHtml,
             attachments: fotoKtpBuffer ? [{ filename: `KTP_${nama_pengirim}.jpg`, content: fotoKtpBuffer }] : []
-        };
-        await transporter.sendMail(mailOptions);
+        });
 
         res.json({ status: 'success', id: orderId });
 
     } catch (err) {
-        console.error(err);
         res.status(500).json({ status: 'error', message: err.message });
     }
 });
