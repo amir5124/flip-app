@@ -133,10 +133,10 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
         const fotoKtpBuffer = req.file ? req.file.buffer : null;
         const totalFormatted = `Rp ${parseInt(total_bayar).toLocaleString('id-ID')}`;
 
-        // A. Simpan Data Awal ke DB
+        // A. Simpan Data Awal ke DB (Gunakan status_transaksi)
         const sql = `INSERT INTO transaksi_flip 
             (nama_pengirim, whatsapp_pengirim, bank_tujuan, rekening_tujuan, nama_penerima, 
-             rekening_admin_bank, rekening_admin_no, nominal_transfer, kode_unik, total_bayar, catatan, foto_ktp, status) 
+             rekening_admin_bank, rekening_admin_no, nominal_transfer, kode_unik, total_bayar, catatan, foto_ktp, status_transaksi) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`;
 
         const [result] = await db.execute(sql, [
@@ -152,7 +152,8 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
         let statusMsg = "Menunggu Verifikasi Manual";
 
         if (isPaid) {
-            await db.execute("UPDATE transaksi_flip SET status = 'SUCCESS' WHERE id = ?", [orderId]);
+            // ✅ PERBAIKAN DI SINI: Ubah 'status' menjadi 'status_transaksi'
+            await db.execute("UPDATE transaksi_flip SET status_transaksi = 'SUCCESS' WHERE id = ?", [orderId]);
             statusMsg = "TERVERIFIKASI OTOMATIS";
         }
 
@@ -204,6 +205,7 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
                     <p><b>Pengirim:</b> ${nama_pengirim} (${whatsapp})</p>
                     <p><b>Tujuan:</b> ${bank_tujuan} - ${rekening_tujuan} (a/n ${nama_penerima})</p>
                     <p style="font-size: 20px; color: #f97316;"><b>Total: ${totalFormatted}</b></p>
+                    <p><b>Rekening Admin:</b> ${rekening_admin_bank} (${rekening_admin_no})</p>
                 </div>
             </div>`;
 
@@ -219,7 +221,7 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
             status: 'success',
             id: orderId,
             auto_verified: !!isPaid,
-            message: isPaid ? "Pembayaran ditemukan!" : "Menunggu verifikasi."
+            message: isPaid ? "Pembayaran ditemukan!" : "Menunggu verifikasi manual."
         });
 
     } catch (err) {
