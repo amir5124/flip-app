@@ -21,7 +21,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// Konfigurasi Database
 const db = mysql.createPool({
     host: '103.55.39.44',
     user: 'linkucoi_klikoo',
@@ -31,7 +30,6 @@ const db = mysql.createPool({
     connectionLimit: 10
 });
 
-// Konfigurasi Email
 const DEFAULT_EMAIL = 'linkutransport@gmail.com';
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -40,15 +38,13 @@ const transporter = nodemailer.createTransport({
     auth: { user: DEFAULT_EMAIL, pass: 'qbckptzxgdumxtdm' }
 });
 
-// Konfigurasi Twilio
 const twilioClient = new twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const TWILIO_WA_NUMBER = 'whatsapp:+62882005447472';
 const ADMIN_WA = 'whatsapp:+6282323907426';
 
-// Konfigurasi API Mesin Otomatis
 const MO_CONFIG = {
-    userId: 'C1505', // GANTI DENGAN USER ID ANDA
-    secret: 'aed960bc3a1f896c16bc4b35ed09071c7e246951dff849b438ab68d39bfc5007', // GANTI DENGAN SECRET ANDA
+    userId: 'C1505',
+    secret: 'aed960bc3a1f896c16bc4b35ed09071c7e246951dff849b438ab68d39bfc5007',
     baseUrl: 'https://mesinotomatis.com/api/bank/'
 };
 
@@ -58,9 +54,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 // 🛠️ UTILITY FUNCTIONS
 // ==========================================
 
-const generateUniqueId = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString();
-};
+const generateUniqueId = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 function formatToWA(phone) {
     if (!phone) return "";
@@ -70,9 +64,6 @@ function formatToWA(phone) {
     return `whatsapp:+${cleaned}`;
 }
 
-/**
- * Fungsi untuk cek mutasi ke Mesin Otomatis
- */
 async function checkMutationMO(bankCode, accountNumber, targetAmount) {
     try {
         const params = new URLSearchParams();
@@ -91,8 +82,7 @@ async function checkMutationMO(bankCode, accountNumber, targetAmount) {
         });
 
         const data = response.data;
-        if (data.result === 'success' && data.message.length > 0) {
-            // Cari transaksi masuk (K) dengan nominal tepat
+        if (data.result === 'success' && data.message && data.message.length > 0) {
             return data.message.find(m => parseInt(m.amount) === parseInt(targetAmount) && m.type === 'K');
         }
         return null;
@@ -106,7 +96,7 @@ async function checkMutationMO(bankCode, accountNumber, targetAmount) {
 // 🚀 ENDPOINTS
 // ==========================================
 
-// 1. Inquiry Bank (Cek Nama Rekening)
+// 1. Inquiry Bank
 app.get('/inquirybank', async (req, res) => {
     const { kodeproduk, tujuan, jenis } = req.query;
     const params = {
@@ -121,7 +111,7 @@ app.get('/inquirybank', async (req, res) => {
     }
 });
 
-// 2. Submit Transfer & Auto Check Mutasi
+// 2. Submit Transfer & Initial Check
 app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
     try {
         const {
@@ -133,7 +123,6 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
         const fotoKtpBuffer = req.file ? req.file.buffer : null;
         const totalFormatted = `Rp ${parseInt(total_bayar).toLocaleString('id-ID')}`;
 
-        // A. Simpan Data Awal ke DB (Gunakan status_transaksi)
         const sql = `INSERT INTO transaksi_flip 
             (nama_pengirim, whatsapp_pengirim, bank_tujuan, rekening_tujuan, nama_penerima, 
              rekening_admin_bank, rekening_admin_no, nominal_transfer, kode_unik, total_bayar, catatan, foto_ktp, status_transaksi) 
@@ -147,75 +136,42 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
 
         const orderId = result.insertId;
 
-        // B. Cek Mutasi Otomatis (Mesin Otomatis)
+        // Cek Mutasi Langsung
         const isPaid = await checkMutationMO(rekening_admin_bank, rekening_admin_no, total_bayar);
         let statusMsg = "Menunggu Verifikasi Manual";
 
         if (isPaid) {
-            // ✅ PERBAIKAN DI SINI: Ubah 'status' menjadi 'status_transaksi'
             await db.execute("UPDATE transaksi_flip SET status_transaksi = 'SUCCESS' WHERE id = ?", [orderId]);
             statusMsg = "TERVERIFIKASI OTOMATIS";
         }
 
-        // C. Kirim Notifikasi WA Admin
-        try {
-            await twilioClient.messages.create({
-                from: TWILIO_WA_NUMBER,
-                to: ADMIN_WA,
-                contentSid: 'HX99e559b9adb630024681d0172f3176ac',
-                contentVariables: JSON.stringify({
-                    "1": nama_pengirim,
-                    "2": whatsapp,
-                    "3": rekening_admin_bank,
-                    "4": rekening_admin_no,
-                    "5": bank_tujuan,
-                    "6": rekening_tujuan,
-                    "7": nama_penerima,
-                    "8": totalFormatted,
-                    "9": `Status: ${statusMsg} | Catatan: ${catatan || "-"}`
-                })
-            });
-        } catch (e) { console.error("WA Admin Error:", e.message); }
-
-        // D. Kirim Notifikasi WA User
-        try {
-            await twilioClient.messages.create({
-                from: TWILIO_WA_NUMBER,
-                to: formatToWA(whatsapp),
-                contentSid: 'HXd07c512d9aba38d44109fdf0828941ae',
-                contentVariables: JSON.stringify({
-                    "1": nama_pengirim,
-                    "2": rekening_admin_bank,
-                    "3": rekening_admin_no,
-                    "4": totalFormatted,
-                    "5": bank_tujuan,
-                    "6": rekening_tujuan,
-                    "7": nama_penerima
-                })
-            });
-        } catch (e) { console.error("WA User Error:", e.message); }
-
-        // E. Kirim Email Admin
-        const emailDesignHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden;">
-                <div style="background-color: ${isPaid ? '#22c55e' : '#f97316'}; padding: 20px; text-align: center; color: white;">
-                    <h1 style="margin: 0;">TF #${orderId} - ${statusMsg}</h1>
-                </div>
-                <div style="padding: 20px;">
-                    <p><b>Pengirim:</b> ${nama_pengirim} (${whatsapp})</p>
-                    <p><b>Tujuan:</b> ${bank_tujuan} - ${rekening_tujuan} (a/n ${nama_penerima})</p>
-                    <p style="font-size: 20px; color: #f97316;"><b>Total: ${totalFormatted}</b></p>
-                    <p><b>Rekening Admin:</b> ${rekening_admin_bank} (${rekening_admin_no})</p>
-                </div>
-            </div>`;
-
-        await transporter.sendMail({
-            from: `"Flip System" <${DEFAULT_EMAIL}>`,
-            to: DEFAULT_EMAIL,
-            subject: `${isPaid ? '✅' : '🔥'} [TF #${orderId}] ${nama_pengirim} - ${statusMsg}`,
-            html: emailDesignHtml,
-            attachments: fotoKtpBuffer ? [{ filename: `KTP_${nama_pengirim}.jpg`, content: fotoKtpBuffer }] : []
-        });
+        // Notifikasi WA Admin & User (Opsional: jalankan async agar respon cepat)
+        const sendNotifications = async () => {
+            try {
+                // WA Admin
+                await twilioClient.messages.create({
+                    from: TWILIO_WA_NUMBER,
+                    to: ADMIN_WA,
+                    contentSid: 'HX99e559b9adb630024681d0172f3176ac',
+                    contentVariables: JSON.stringify({
+                        "1": nama_pengirim, "2": whatsapp, "3": rekening_admin_bank, "4": rekening_admin_no,
+                        "5": bank_tujuan, "6": rekening_tujuan, "7": nama_penerima, "8": totalFormatted,
+                        "9": `Status: ${statusMsg} | Catatan: ${catatan || "-"}`
+                    })
+                });
+                // WA User
+                await twilioClient.messages.create({
+                    from: TWILIO_WA_NUMBER,
+                    to: formatToWA(whatsapp),
+                    contentSid: 'HXd07c512d9aba38d44109fdf0828941ae',
+                    contentVariables: JSON.stringify({
+                        "1": nama_pengirim, "2": rekening_admin_bank, "3": rekening_admin_no,
+                        "4": totalFormatted, "5": bank_tujuan, "6": rekening_tujuan, "7": nama_penerima
+                    })
+                });
+            } catch (e) { console.error("Notification Error:", e.message); }
+        };
+        sendNotifications();
 
         res.json({
             status: 'success',
@@ -230,7 +186,30 @@ app.post('/submit-transfer', upload.single('foto_ktp'), async (req, res) => {
     }
 });
 
-// 3. View KTP
+// 3. Polling Endpoint (Check Status & Re-verify)
+app.get('/check-status/:id', async (req, res) => {
+    try {
+        const [rows] = await db.execute("SELECT * FROM transaksi_flip WHERE id = ?", [req.params.id]);
+        if (rows.length === 0) return res.status(404).json({ message: "Not found" });
+
+        let transaction = rows[0];
+
+        // Jika masih pending, coba cek mutasi lagi
+        if (transaction.status_transaksi === 'PENDING') {
+            const isPaidNow = await checkMutationMO(transaction.rekening_admin_bank, transaction.rekening_admin_no, transaction.total_bayar);
+            if (isPaidNow) {
+                await db.execute("UPDATE transaksi_flip SET status_transaksi = 'SUCCESS' WHERE id = ?", [req.params.id]);
+                transaction.status_transaksi = 'SUCCESS';
+            }
+        }
+
+        res.json({ status_transaksi: transaction.status_transaksi });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 4. View KTP
 app.get('/view-ktp/:id', async (req, res) => {
     try {
         const [rows] = await db.execute("SELECT foto_ktp FROM transaksi_flip WHERE id = ?", [req.params.id]);
